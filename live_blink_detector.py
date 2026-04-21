@@ -2,7 +2,8 @@
 live_blink_detector.py
 ----------------------
 Detección de parpadeos en tiempo real usando la webcam.
-Imprime por consola cada vez que se detecta un parpadeo.
+Imprime por consola cada vez que se detecta un parpadeo y guarda dos CSV
+al finalizar la sesión (equivalentes a los de blink_detector.py).
 
 Uso:
     python3 live_blink_detector.py
@@ -16,8 +17,11 @@ import mediapipe as mp
 from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision as mp_vision
 import numpy as np
+import pandas as pd
 import subprocess
 import time
+import os
+from datetime import datetime
 
 # ---------------------------------------------------------------------------
 # Landmarks de cada ojo (mismo orden que blink_detector.py)
@@ -37,6 +41,7 @@ CONSEC_FRAMES    = 2
 # Ejemplos: "iphone", "continuity", "macbook"
 # Déjalo vacío ("") para que pregunte siempre.
 CAMERA_NAME_HINT = "iphone"
+OUTPUT_DIR       = "resultados"
 
 
 # ---------------------------------------------------------------------------
@@ -169,6 +174,11 @@ def run():
     consec_below   = 0
     in_blink       = False
     start_time_ms  = None
+    ear_left_blink = []
+    ear_right_blink= []
+
+    blink_records = []   # un dict por parpadeo
+    raw_records   = []   # un dict por fotograma
 
     print("Detección en vivo iniciada. Pulsa Q para salir.\n")
 
@@ -186,30 +196,65 @@ def run():
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
         result   = detector.detect_for_video(mp_image, timestamp_ms)
 
+        ear_left      = None
+        ear_right     = None
         ear_avg       = None
         face_detected = False
+        ojo_cerrado   = False
 
         if result.face_landmarks:
             face_detected = True
-            lms      = result.face_landmarks[0]
+            lms       = result.face_landmarks[0]
             ear_left  = calculate_ear(lms, LEFT_EYE_IDX,  w, h)
             ear_right = calculate_ear(lms, RIGHT_EYE_IDX, w, h)
             ear_avg   = (ear_left + ear_right) / 2.0
+            ojo_cerrado = ear_avg < EAR_THRESHOLD
 
-            if ear_avg < EAR_THRESHOLD:
+            if ojo_cerrado:
                 consec_below += 1
                 if not in_blink and consec_below >= CONSEC_FRAMES:
-                    in_blink      = True
-                    start_time_ms = timestamp_ms
+                    in_blink       = True
+                    start_time_ms  = timestamp_ms
+                    ear_left_blink = []
+                    ear_right_blink= []
+                if in_blink:
+                    ear_left_blink.append(ear_left)
+                    ear_right_blink.append(ear_right)
             else:
                 if in_blink:
                     blink_counter += 1
                     duration_ms = timestamp_ms - start_time_ms
                     elapsed_s   = timestamp_ms / 1000
                     print(f"  [{elapsed_s:6.1f}s]  Parpadeo #{blink_counter:3d}  —  "
-                          f"duración: {duration_ms} ms  |  EAR mín: {ear_avg:.3f}")
-                in_blink     = False
-                consec_below = 0
+                          f"duración: {duration_ms} ms")
+                    blink_records.append({
+                        "parpadeo_id":         blink_counter,
+                        "tiempo_inicio_ms":    start_time_ms,
+                        "tiempo_fin_ms":       timestamp_ms,
+                        "duracion_ms":         duration_ms,
+                        "n_frames_cerrado":    len(ear_left_blink),
+                        "ear_min_izquierdo":   round(min(ear_left_blink),  4) if ear_left_blink  else None,
+                        "ear_min_derecho":     round(min(ear_right_blink), 4) if ear_right_blink else None,
+                        "ear_min_promedio":    round(
+                            min((l + r) / 2 for l, r in zip(ear_left_blink, ear_right_blink)), 4
+                        ) if ear_left_blink else None,
+                        "ear_media_izquierdo": round(np.mean(ear_left_blink),  4) if ear_left_blink  else None,
+                        "ear_media_derecho":   round(np.mean(ear_right_blink), 4) if ear_right_blink else None,
+                    })
+                in_blink        = False
+                consec_below    = 0
+                ear_left_blink  = []
+                ear_right_blink = []
+
+        raw_records.append({
+            "tiempo_ms":      timestamp_ms,
+            "cara_detectada": face_detected,
+            "ear_izquierdo":  round(ear_left,  4) if ear_left  is not None else None,
+            "ear_derecho":    round(ear_right, 4) if ear_right is not None else None,
+            "ear_promedio":   round(ear_avg,   4) if ear_avg   is not None else None,
+            "ojo_cerrado":    ojo_cerrado,
+            "en_parpadeo":    in_blink,
+        })
 
         # --- Overlay en la ventana de previsualización ---
         color_estado = (0, 200, 0) if (face_detected and not in_blink) else \
@@ -219,8 +264,8 @@ def run():
         estado_txt = "PARPADEO" if in_blink else ("OK" if face_detected else "sin cara")
         ear_txt    = f"EAR: {ear_avg:.3f}" if ear_avg is not None else "EAR: ---"
 
-        cv2.putText(frame, estado_txt,         (20, 40),  cv2.FONT_HERSHEY_SIMPLEX, 1.1, color_estado, 2)
-        cv2.putText(frame, ear_txt,            (20, 80),  cv2.FONT_HERSHEY_SIMPLEX, 0.7, (220, 220, 220), 2)
+        cv2.putText(frame, estado_txt,                    (20, 40),  cv2.FONT_HERSHEY_SIMPLEX, 1.1, color_estado, 2)
+        cv2.putText(frame, ear_txt,                       (20, 80),  cv2.FONT_HERSHEY_SIMPLEX, 0.7, (220, 220, 220), 2)
         cv2.putText(frame, f"Parpadeos: {blink_counter}", (20, 115), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (220, 220, 220), 2)
 
         cv2.imshow("Live Blink Detector  [Q = salir]", frame)
@@ -235,10 +280,24 @@ def run():
 
     elapsed_total = time.time() - session_start
     bpm = (blink_counter / elapsed_total) * 60 if elapsed_total > 0 else 0
+
+    # --- Guardar CSV ---
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    sesion_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    blinks_path = os.path.join(OUTPUT_DIR, f"live_{sesion_id}_parpadeos.csv")
+    raw_path    = os.path.join(OUTPUT_DIR, f"live_{sesion_id}_ear_raw.csv")
+
+    pd.DataFrame(blink_records).to_csv(blinks_path, index=False, encoding="utf-8")
+    pd.DataFrame(raw_records).to_csv(raw_path,       index=False, encoding="utf-8")
+
     print(f"\n--- Sesión terminada ---")
     print(f"Duración        : {elapsed_total:.1f} s")
     print(f"Total parpadeos : {blink_counter}")
     print(f"Frecuencia      : {bpm:.1f} parpadeos/min")
+    print(f"\nArchivos generados:")
+    print(f"  {blinks_path}")
+    print(f"  {raw_path}")
 
 
 if __name__ == "__main__":
