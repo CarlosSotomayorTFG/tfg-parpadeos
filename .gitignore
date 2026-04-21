@@ -1,0 +1,15 @@
+# Modelo descargado automáticamente (28 MB, no hace falta subir)
+face_landmarker.task
+
+# Resultados generados por el script (datos locales)
+resultados/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# macOS
+.DS_Store
