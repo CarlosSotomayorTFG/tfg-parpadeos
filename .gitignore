@@ -13,3 +13,6 @@ venv/
 
 # macOS
 .DS_Store
+
+# Documentos privados
+EXPLICACION_TECNICA.md
